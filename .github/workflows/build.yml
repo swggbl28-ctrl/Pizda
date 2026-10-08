@@ -1,0 +1,67 @@
+name: Build APK
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Locate project
+        shell: bash
+        run: |
+          set -e
+          IDXF() { find . -name 'index*.html' -not -path '*/node_modules/*' -not -path './www/*' -not -path '*/android/*' -not -path './_unz/*'; }
+          if [ -z "$(IDXF | head -1)" ]; then
+            find . -name '*.zip' -not -path '*/node_modules/*' -exec unzip -oq {} -d _unz \;
+          fi
+          IDX=$(find . -name 'index*.html' -not -path '*/node_modules/*' -not -path './www/*' -not -path '*/android/*' | sort | tail -1)
+          if [ -z "$IDX" ]; then echo "index.html NOT FOUND"; ls -R | head -50; exit 1; fi
+          APP=$(dirname "$IDX")
+          echo "APP=$APP" >> "$GITHUB_ENV"
+          echo "Project dir: $APP"
+          cd "$APP"
+          [ -f package.json ] || echo '{"name":"backrooms-vr-office-360","version":"1.0.0","private":true,"dependencies":{"@capacitor/android":"^6.1.2","@capacitor/cli":"^6.1.2","@capacitor/core":"^6.1.2","three":"0.160.0"}}' > package.json
+          [ -f capacitor.config.json ] || echo '{"appId":"com.backrooms.vroffice360","appName":"Backrooms VR Office 360","webDir":"www","server":{"androidScheme":"https","cleartext":true},"plugins":{"CapacitorHttp":{"enabled":true}}}' > capacitor.config.json
+          ls -la
+      - name: npm install
+        working-directory: ${{ env.APP }}
+        run: npm install --no-audit --no-fund
+      - name: Prepare www
+        working-directory: ${{ env.APP }}
+        run: |
+          set -e
+          rm -rf www && mkdir -p www
+          cp "$(ls index*.html | sort | tail -1)" www/index.html
+          if [ -f manifest.json ]; then cp manifest.json www/; fi
+          cp node_modules/three/build/three.module.js www/
+      - name: Add android
+        working-directory: ${{ env.APP }}
+        run: |
+          set -e
+          [ -d android ] || npx cap add android
+          M=android/app/src/main/AndroidManifest.xml
+          grep -q 'android.permission.INTERNET' "$M" || sed -i 's#</manifest>#<uses-permission android:name="android.permission.INTERNET" /></manifest>#' "$M"
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+          npx cap sync android
+      - name: Build debug APK
+        working-directory: ${{ env.APP }}/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Backrooms-VR-Office-360-apk
+          path: ${{ env.APP }}/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
